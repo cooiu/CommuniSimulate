@@ -318,9 +318,9 @@ const saveFallback = async () => {
     >
       <span>图形 #{{ windowIndex }}</span>
       <div class="window-controls">
-        <button @click="minimize" title="最小化">─</button>
-        <button @click="toggleMaximize" title="最大化">□</button>
-        <button @click="$emit('close')" title="关闭">×</button>
+        <button @mousedown.stop @click="minimize" title="最小化">─</button>
+        <button @mousedown.stop @click="toggleMaximize" title="最大化">□</button>
+        <button @mousedown.stop @click="$emit('close')" title="关闭">×</button>
       </div>
     </div>
 
@@ -455,34 +455,6 @@ const saveFallback = async () => {
 
 .reset-btn {
   background-image: url('@/assets/restore.png');
-}
-
-.save-menu {
-  position: absolute;
-  background: white;
-  border: 1px solid #ccc;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-  z-index: 1001;
-}
-
-.menu-item {
-  padding: 8px 16px;
-  cursor: pointer;
-}
-
-.menu-item:hover {
-  background: #f0f0f0;
-}
-
-.toolbar-group {
-  display: flex;
-  gap: 4px;
-}
-
-.window-controls button {
-  padding: 0 8px;
-  font-size: 14px;
 }
 
 /* 最小化状态 */

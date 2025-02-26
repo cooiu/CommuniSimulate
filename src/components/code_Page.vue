@@ -263,14 +263,13 @@ const clearOutput = () => {
       </div>
     </div>
 
-    <!-- 图形窗口 -->
-    <PlotWindow
-      v-for="plot in plots"
-      :key="plot.id"
-      :window-index="plot.id"
-      :plot-data="plot.data"
-      @close="closePlotWindow(plot.id)"
-    />
+      <PlotWindow
+        v-for="(plot, index) in plots"
+        :key="plot.id"
+        :window-index="index"
+        :plot-data="plot.data"
+        @close="closePlotWindow(plot.id)"
+      />
   </div>
 </template>
 
