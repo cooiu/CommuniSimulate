@@ -1,7 +1,6 @@
 <script setup>
-import { ref } from 'vue';
+import { ref,nextTick } from 'vue';
 import DSBSystem from './DSB_Modem.vue';
-import { NButton } from 'naive-ui';
 
 const selectedSystem = ref('');
 const isSimulationVisible = ref(false);
@@ -9,9 +8,19 @@ const isSimulating = ref(false);
 const emit = defineEmits(['trigger-next']);
 
 // 选择系统
-const selectSystem = (system) => {
+const selectSystem = async (system) => {
   selectedSystem.value = system;
   isSimulationVisible.value = true;
+
+  // 等待 DOM 更新完成
+  await nextTick();
+
+  // 确保 dsbSystemRef.value 存在
+  if (DSBModuleParams.value) {
+    console.log(DSBModuleParams.value.moduleParams);
+  } else {
+    console.error('DSBSystem 组件未正确挂载');
+  }
 };
 
 // 返回主页
@@ -19,37 +28,178 @@ const goBack = () => {
   emit('trigger-next', 'main');
 };
 
+const DSBModuleParams = ref(null);
 // 运行仿真
 const runSimulation = async () => {
   if (!selectedSystem.value) return;
 
   try {
     isSimulating.value = true;
+
+    // 通知DSB_Modem组件开始加载
+    if (DSBModuleParams.value && DSBModuleParams.value.startLoading) {
+      DSBModuleParams.value.startLoading();
+    }
+
     // 调用后端API
-    const response = await fetch('/api/simulate', {
+    const DSBmoduleParams = DSBModuleParams.value.moduleParams;
+    // 动态生成 Julia 代码
+    const code = `
+using TyBase
+using TyMath
+using TyDSPSystem
+using TySignalProcessing
+
+base_fre = ${DSBmoduleParams.baseband.frequency}
+base_amp = ${DSBmoduleParams.baseband.amplitude}
+base_phase = ${DSBmoduleParams.baseband.phaseoffset}
+mul_fre = ${DSBmoduleParams.multiplier.frequency}
+mul_amp = ${DSBmoduleParams.multiplier.amplitude}
+mul_phase = ${DSBmoduleParams.multiplier.phaseoffset}
+cha_psd = ${DSBmoduleParams.channel.PSD}
+cha_amp = ${DSBmoduleParams.channel.amplitude}
+bandpass_upfre = ${DSBmoduleParams.bandpass.upFrequency}
+bandpass_dowfre = ${DSBmoduleParams.bandpass.downFrequency}
+demul_fre = ${DSBmoduleParams.demodulator.frequency}
+demul_amp = ${DSBmoduleParams.demodulator.amplitude}
+demul_phase = ${DSBmoduleParams.demodulator.phaseoffset}
+lowpass_fre = ${DSBmoduleParams.lowpass.cutoffFreq}
+
+    #设置统一采样率
+    Samplerate = max(base_fre, mul_fre) * 10
+    t = 0:1/Samplerate:1
+
+    # 生成基带信号
+    base_signal = base_amp*sin.(2*pi*base_fre*t.+base_phase)
+    base_signal_fft = fft(base_signal)               # 计算 FFT
+    base_signal_fft_magnitude = abs.(base_signal_fft)   # 取幅值
+    base_signal_fft_freqs = fftfreq(length(base_signal_fft), Samplerate)  # 计算频率轴
+
+    # 生成载波信号
+    carrier_signal = mul_amp*sin.(2*pi*mul_fre*t.+mul_phase)
+
+    # DSB调制：基带信号与载波信号相乘
+    modulated_signal = base_signal .* carrier_signal
+    modulated_signal_fft = fft(modulated_signal)               # 计算 FFT
+    modulated_signal_fft_magnitude = abs.(modulated_signal_fft)   # 取幅值
+    modulated_signal_fft_freqs = fftfreq(length(modulated_signal_fft), Samplerate)  # 计算频率轴
+
+    # 通过信道：添加高斯白噪声
+    Fs = 1000  # 采样率
+    noise_power = cha_psd * Fs  # 噪声的总功率
+    noise_std = sqrt(noise_power)  # 噪声的标准差
+    channel_noise = noise_std .* randn(size(modulated_signal))  # 生成高斯白噪声
+    transmitted_signal = modulated_signal + cha_amp*channel_noise  # 添加噪声到调制信号
+    transmitted_signal_fft = fft(transmitted_signal)               # 计算 FFT
+    transmitted_signal_fft_magnitude = abs.(transmitted_signal_fft)   # 取幅值
+    transmitted_signal_fft_freqs = fftfreq(length(transmitted_signal_fft), Samplerate)  # 计算频率轴
+
+    # 带通滤波
+    bandpa = [bandpass_dowfre bandpass_upfre]
+    filtered_signal,= bandpass(transmitted_signal,bandpa,Samplerate)
+    filtered_signal_fft = fft(filtered_signal)               # 计算 FFT
+    filtered_signal_fft_magnitude = abs.(filtered_signal_fft)   # 取幅值
+    filtered_signal_fft_freqs = fftfreq(length(filtered_signal_fft), Samplerate)  # 计算频率轴
+
+    # 解调：与本地载波信号相乘
+    local_carrier = demul_amp*sin.(2*pi*demul_fre*t.+demul_phase)
+    demodulated_signal = filtered_signal .* local_carrier
+    demodulated_signal_fft = fft(demodulated_signal)               # 计算 FFT
+    demodulated_signal_fft_magnitude = abs.(demodulated_signal_fft)   # 取幅值
+    demodulated_signal_fft_freqs = fftfreq(length(demodulated_signal_fft), Samplerate)  # 计算频率轴
+
+    # 低通滤波
+    recovered_signal, = lowpass(demodulated_signal, lowpass_fre, Samplerate)
+    recovered_signal_fft = fft(recovered_signal)               # 计算 FFT
+    recovered_signal_fft_magnitude = abs.(recovered_signal_fft)   # 取幅值
+    recovered_signal_fft_freqs = fftfreq(length(recovered_signal_fft), Samplerate)  # 计算频率轴
+
+     # 返回包含所有信号的数组
+    re = [
+        Dict(
+            "name" => "base_signal",
+            "time_signal" => base_signal,
+            "freq" => base_signal_fft_freqs,
+            "freq_magnitude" => base_signal_fft_magnitude
+        ),
+        Dict(
+            "name" => "modulated_signal",
+            "time_signal" => modulated_signal,
+            "freq" => modulated_signal_fft_freqs,
+            "freq_magnitude" => modulated_signal_fft_magnitude
+        ),
+        Dict(
+            "name" => "transmitted_signal",
+            "time_signal" => transmitted_signal,
+            "freq" => transmitted_signal_fft_freqs,
+            "freq_magnitude" => transmitted_signal_fft_magnitude
+        ),
+        Dict(
+            "name" => "filtered_signal",
+            "time_signal" => filtered_signal,
+            "freq" => filtered_signal_fft_freqs,
+            "freq_magnitude" => filtered_signal_fft_magnitude
+        ),
+        Dict(
+            "name" => "demodulated_signal",
+            "time_signal" => demodulated_signal,
+            "freq" => demodulated_signal_fft_freqs,
+            "freq_magnitude" => demodulated_signal_fft_magnitude
+        ),
+        Dict(
+            "name" => "recovered_signal",
+            "time_signal" => recovered_signal,
+            "freq" => recovered_signal_fft_freqs,
+            "freq_magnitude" => recovered_signal_fft_magnitude
+        )
+    ]
+    `
+
+// 打印生成的代码，查看是否正确
+    console.log(code);
+
+    const response = await fetch('http://localhost:5000/execute', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        system: selectedSystem.value,
-        // 其他参数...
+          code:code
       })
     });
+
     const data = await response.json();
-    console.log(data);
-    // 处理响应...
+    console.log("返回数据:",data);
+
+    // 将数据传递给DSB_Modem组件
+    if (data && data.data && DSBModuleParams.value && DSBModuleParams.value.updateParentData) {
+      DSBModuleParams.value.updateParentData(data);
+
+      // 选择基带信号作为默认显示
+      if (DSBModuleParams.value.handleModuleClick) {
+        DSBModuleParams.value.handleModuleClick('baseband');
+      }
+    }
   } catch (error) {
     console.error('仿真出错:', error);
-  } finally {
     isSimulating.value = false;
   }
+};
+
+// 停止仿真
+const stopSimulation = () => {
+  isSimulating.value = false;
 };
 
 // 处理DSB系统的仿真请求
 const handleDSBSimulation = () => {
   // 处理DSB系统特定的仿真逻辑
   runSimulation();
+};
+
+// 处理DSB系统的停止仿真请求
+const handleDSBStopSimulation = () => {
+  stopSimulation();
 };
 </script>
 
@@ -73,14 +223,6 @@ const handleDSBSimulation = () => {
         <div class="explorer-header">
           <div class="header-content">
             <h3>仿真系统</h3>
-            <NButton
-              type="primary"
-              :disabled="isSimulating"
-              @click="runSimulation"
-              class="simulate-button"
-            >
-              {{ isSimulating ? '正在仿真...' : '运行仿真' }}
-            </NButton>
           </div>
         </div>
         <div class="file-list">
@@ -110,7 +252,9 @@ const handleDSBSimulation = () => {
         <DSBSystem
           v-if="selectedSystem === 'dsb'"
           :isSimulating="isSimulating"
+          ref="DSBModuleParams"
           @run-simulation="handleDSBSimulation"
+          @stop-simulation="handleDSBStopSimulation"
         />
         <div v-else class="empty-state">
           请选择一个仿真系统

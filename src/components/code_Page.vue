@@ -187,10 +187,6 @@ const closePlotWindow = (id) => {
   plots.value = plots.value.filter(plot => plot.id !== id);
 };
 
-// // 添加图形缩放处理函数
-// const handleScaleChange = (data) => {
-//   console.log('图形缩放:', data);
-// };
 
 onMounted(() => {
   initMonaco();
@@ -313,13 +309,13 @@ const clearOutput = () => {
   width: 95%;
   max-width: 1800px;
   margin: 10px auto 30px;
-  height: calc(100vh - 200px);  /* 使用视口高度计算 */
-  min-height: 500px;  /* 设置最小高度 */
+  height: calc(100vh - 200px);  /* 使用视口高度 */
+  min-height: 500px;  /* 最小高度 */
 }
 
 .editor-section, .output-section {
   width: 100%;
-  height: 100%;  /* 确保占满父容器高度 */
+  height: 100%;  
   background: rgba(255, 255, 255, 0.98);
   border-radius: 8px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
@@ -398,7 +394,7 @@ const clearOutput = () => {
 }
 
 .control-btn.execute {
-  background: #4caf50; /* 绿色 */
+  background: #4caf50; 
 }
 
 .control-btn.execute:hover {
@@ -406,7 +402,7 @@ const clearOutput = () => {
 }
 
 .control-btn.save {
-  background: #ff9800; /* 橙色 */
+  background: #ff9800; 
 }
 
 .control-btn.save:hover {
@@ -500,7 +496,7 @@ const clearOutput = () => {
   bottom: 15px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.6); /* 改为灰色半透明背景 */
+  background: rgba(0, 0, 0, 0.6); 
   color: white;
   padding: 10px 20px;
   border-radius: 20px;
