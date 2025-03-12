@@ -68,15 +68,16 @@ const initCodeMirror = () => {
       caretColor: "#569cd6",
       fontFamily: "'Consolas', 'Monaco', monospace",
       fontSize: "14px",
-      color: "#d4d4d4"
+      color: "#d4d4d4",
+      paddingBottom: "200px"
     },
     ".cm-editor": {
       height: "100%",
       maxHeight: "100%"
     },
     ".cm-scroller": {
-      height: "100%",
-      overflow: "auto"
+      overflow: "auto",
+      maxHeight: "100%"
     },
     "&.cm-focused .cm-cursor": {
       borderLeftColor: "#569cd6"
@@ -438,8 +439,8 @@ onUnmounted(() => {
   width: 95%;
   max-width: 1800px;
   margin: 10px auto 30px;
-  height: calc(100vh - 200px);  /* 使用视口高度 */
-  min-height: 500px;  /* 最小高度 */
+  height: calc(100vh - 160px);  /* 调整高度，减少顶部空间 */
+  min-height: 500px;
 }
 
 .editor-section, .output-section {
@@ -451,17 +452,19 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   backdrop-filter: blur(10px);
-  overflow: hidden;  /* 防止内容溢出 */
+  overflow: hidden;
 }
 
 .editor-container {
   flex: 1;
   position: relative;
-  height: 100%;
+  height: calc(100% - 50px);
   min-height: 0;
   background-color: #1e1e1e;
   border-radius: 4px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .output-container {
@@ -479,6 +482,8 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   min-height: 100%;
+  flex: 1;
+  overflow: hidden;
 }
 
 .editor-header, .output-header {
@@ -707,13 +712,13 @@ onUnmounted(() => {
 
 /* CodeMirror 主题覆盖 */
 :deep(.cm-editor) {
-  height: 100%;
+  height: 100% !important;
   width: 100%;
 }
 
 :deep(.cm-scroller) {
-  height: 100%;
-  overflow: auto;
+  height: 100% !important;
+  overflow: auto !important;
 }
 
 :deep(.cm-content) {
@@ -721,6 +726,7 @@ onUnmounted(() => {
   word-break: break-all;
   word-wrap: break-word;
   color: #d4d4d4;
+  min-height: 100% !important;
 }
 
 :deep(.cm-gutters) {
