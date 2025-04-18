@@ -1,10 +1,12 @@
 <script setup>
 import { ref,nextTick } from 'vue';
 import DSBSystem from './DSB_Modem.vue';
+import { executeCode } from '../services/api';
 
 const selectedSystem = ref('');
 const isSimulationVisible = ref(false);
 const isSimulating = ref(false);
+const DSBModuleParams = ref(null);
 const emit = defineEmits(['trigger-next']);
 
 // 选择系统
@@ -28,7 +30,6 @@ const goBack = () => {
   emit('trigger-next', 'main');
 };
 
-const DSBModuleParams = ref(null);
 // 运行仿真
 const runSimulation = async () => {
   if (!selectedSystem.value) return;
@@ -158,17 +159,8 @@ lowpass_fre = ${DSBmoduleParams.lowpass.cutoffFreq}
 // 打印生成的代码，查看是否正确
     console.log(code);
 
-    const response = await fetch('http://localhost:5000/execute', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-          code:code
-      })
-    });
-
-    const data = await response.json();
+    // 使用API服务执行代码
+    const data = await executeCode(code);
     console.log("返回数据:",data);
 
     // 将数据传递给DSB_Modem组件

@@ -1,0 +1,12 @@
+services:
+  frontend:
+    image: nginx:stable-alpine
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    volumes:
+      - ./dist:/usr/share/nginx/html
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf
+    # volumes:
+    #   # 本地开发时可以取消注释以下行，将本地dist目录映射到容器中
+    #   - ./dist:/usr/share/nginx/html 

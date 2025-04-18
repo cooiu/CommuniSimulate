@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { EditorView } from '@codemirror/view';
 import { basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
@@ -7,58 +7,41 @@ import { julia } from '@plutojl/lang-julia';
 import PlotWindow from './PlotWindow.vue';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
+import { executeCode, createSession, terminateSession } from '../services/api';
 
-const result = ref('');
 const plots = ref([]);
-let editor = null;
-const previousCode = ref(''); // 存储之前执行的代码
+const cells = ref([]); // 存储代码单元格
+const sessionVariables = ref({}); // 存储会话变量
+const showVariables = ref(false); // 控制变量面板的显示
+const isInitializing = ref(false); // 控制会话初始化状态
+const initializationError = ref(''); // 初始化错误信息
 
 const emit = defineEmits(['trigger-next']);
 
+// Cell类型定义
+const CellType = {
+  CODE: 'code',
+  MARKDOWN: 'markdown'
+};
+
 // 添加默认代码
 const defaultCode = `# 这是一个Julia代码示例
-println("Hello, World!")
-
-# 在这里编写你的代码
-# 示例：生成测试数据
-x = collect(0:0.1:2π)
-y1 = sin.(x)
-y2 = cos.(x)
-
-println("数据已生成")
-
-# 创建新图形
-using TyPlot
-figure()
-
-# 绘制多条曲线
-plot(x, y1, "b-", label="sin(x)")
-plot(x, y2, "r--", label="cos(x)")
-
-# 添加网格
-grid("on")
-
-# 添加标签
-xlabel("x")
-ylabel("y")
-
-# 计算一些统计值
-println("\n统计信息:")
-println("sin(x) 最大值: ", maximum(y1))
-println("sin(x) 最小值: ", minimum(y1))
-println("cos(x) 最大值: ", maximum(y2))
-println("cos(x) 最小值: ", minimum(y2))`;
+println("Hello, World!")`;
 
 // 返回主页
 const goBack = () => {
   emit('trigger-next', 'main');
 };
 
-// 初始化CodeMirror编辑器
-const initCodeMirror = () => {
-  const container = document.getElementById('editor-container');
+// 初始化Cell编辑器
+const initCells = () => {
+  // 添加初始单元格
+  addCell(CellType.CODE, defaultCode);
+};
 
-  const darkTheme = EditorView.theme({
+// 创建暗色主题
+const createDarkTheme = () => {
+  return EditorView.theme({
     "&": {
       backgroundColor: "#1e1e1e",
       color: "#d4d4d4",
@@ -69,7 +52,7 @@ const initCodeMirror = () => {
       fontFamily: "'Consolas', 'Monaco', monospace",
       fontSize: "14px",
       color: "#d4d4d4",
-      paddingBottom: "200px"
+      padding: "8px"
     },
     ".cm-editor": {
       height: "100%",
@@ -108,9 +91,11 @@ const initCodeMirror = () => {
       color: "#858585"
     }
   }, {dark: true});
+};
 
-  // Julia 语法高亮样式
-  const juliaHighlightStyle = HighlightStyle.define([
+// Julia 语法高亮样式
+const createJuliaHighlightStyle = () => {
+  return HighlightStyle.define([
     {tag: tags.keyword, color: "#C586C0"},
     {tag: tags.operator, color: "#d4d4d4"},
     {tag: tags.number, color: "#4EC9B0"},
@@ -121,152 +106,256 @@ const initCodeMirror = () => {
     {tag: tags.typeName, color: "#4ec9b0"},
     {tag: tags.invalid, color: "#F44747"}
   ]);
-
-  try {
-    const state = EditorState.create({
-      doc: defaultCode,
-      extensions: [
-        basicSetup,
-        julia(),
-        darkTheme,
-        syntaxHighlighting(juliaHighlightStyle),
-        EditorView.lineWrapping
-      ]
-    });
-
-    editor = new EditorView({
-      state,
-      parent: container
-    });
-
-    console.log('编辑器初始化成功');
-  } catch (error) {
-    console.error('编辑器初始化失败:', error);
-  }
 };
 
-// 获取选中的代码
-const getSelectedCode = () => {
-  const selection = editor.state.selection.main;
-  if (selection.empty) {
-    return null;
-  }
-  return editor.state.sliceDoc(selection.from, selection.to);
+// 添加新的单元格
+const addCell = (type, content = '') => {
+  const id = Date.now().toString();
+  cells.value.push({
+    id,
+    type,
+    content,
+    editor: null,
+    output: '',
+    plots: [],
+    isExecuting: false
+  });
+
+  // 等待DOM更新后初始化编辑器
+  nextTick(() => {
+    initCellEditor(id, content);
+  });
 };
 
-// 获取选中位置之前的所有代码
-const getCodeBeforeSelection = (selection) => {
-  return editor.state.sliceDoc(0, selection.from);
-};
-
-// 执行选中的代码片段
-const executeSelectedCode = async () => {
-  const selectedCode = getSelectedCode();
-  if (!selectedCode) {
-    alert('请先选择要执行的代码片段');
-    return;
-  }
-
-  try {
-    result.value = '执行中...';
-    const beforeCode = getCodeBeforeSelection(editor.state.selection.main);
-    const fullCode = beforeCode + '\n' + selectedCode;
-    previousCode.value = fullCode; // 保存执行的代码
-
-    const response = await fetch('http://localhost:5000/execute', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        code: fullCode,
-        previous_code: previousCode.value
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+// 初始化单元格编辑器
+const initCellEditor = (cellId, content) => {
+  // 确保DOM已经更新，延迟一点执行
+  setTimeout(() => {
+    const container = document.getElementById(`cell-editor-${cellId}`);
+    if (!container) {
+      console.error(`找不到容器: cell-editor-${cellId}`);
+      return;
     }
 
-    const data = await response.json();
+    const darkTheme = createDarkTheme();
+    const juliaHighlightStyle = createJuliaHighlightStyle();
+
+    try {
+      const state = EditorState.create({
+        doc: content,
+        extensions: [
+          basicSetup,
+          julia(),
+          darkTheme,
+          syntaxHighlighting(juliaHighlightStyle),
+          EditorView.lineWrapping
+        ]
+      });
+
+      const cellEditor = new EditorView({
+        state,
+        parent: container
+      });
+
+      // 更新单元格编辑器引用
+      const cellIndex = cells.value.findIndex(cell => cell.id === cellId);
+      if (cellIndex !== -1) {
+        cells.value[cellIndex].editor = cellEditor;
+      }
+
+      console.log(`单元格 ${cellId} 编辑器初始化成功`);
+    } catch (error) {
+      console.error(`单元格 ${cellId} 编辑器初始化失败:`, error);
+    }
+  }, 50); // 添加50ms延迟确保DOM已完全渲染
+};
+
+// 初始化会话
+const initSession = async () => {
+  try {
+    isInitializing.value = true;
+    initializationError.value = '';
+    await createSession();
+    console.log('会话初始化成功');
+    isInitializing.value = false;
+
+    // 会话初始化成功后再初始化单元格
+    initCells();
+  } catch (error) {
+    console.error('会话初始化失败:', error);
+    initializationError.value = `会话初始化失败: ${error.message}`;
+    isInitializing.value = false;
+  }
+};
+
+// 执行单个单元格代码
+const executeCell = async (cellId) => {
+  const cellIndex = cells.value.findIndex(cell => cell.id === cellId);
+  if (cellIndex === -1) return;
+
+  const cell = cells.value[cellIndex];
+  if (!cell.editor) return;
+
+  try {
+    // 标记为正在执行
+    cell.isExecuting = true;
+    cell.output = '执行中...';
+    cell.plots = [];
+
+    // 只获取当前单元格代码
+    const currentCellCode = cell.editor.state.doc.toString();
+
+    // 调用API执行代码
+    const data = await executeCode(currentCellCode);
+
+    // 清空上一次的输出
+    cell.output = '';
+    cell.plots = [];
+
+    // 更新变量信息
+    if (data.variables) {
+      sessionVariables.value = data.variables;
+    }
+
+    // 只考虑当前单元格的输出
+    let hasOutput = false;
 
     // 处理文本输出
     if (data.text) {
-      result.value = Array.isArray(data.text) ? data.text.join('\n') : data.text;
+      // 文本可能是字符串或数组
+      const outputText = Array.isArray(data.text) ? data.text.join('\n') : data.text;
+      if (outputText && outputText.trim() !== '') {
+        cell.output = outputText;
+        hasOutput = true;
+      }
+    }
+
+    // 处理错误输出
+    if (data.error) {
+      cell.output = data.error;
+      hasOutput = true;
     }
 
     // 处理图形输出
     if (data.images && data.images.length > 0) {
-      plots.value = data.images.map(image => ({
-        id: image.id,
-        data: image.data
-      }));
-      console.log('设置图形数据:', plots.value);
+      data.images.forEach(image => {
+        if (image && image.data) {
+          cell.plots.push({
+            id: image.id,
+            data: image.data,
+            isSvg: true
+          });
+          hasOutput = true;
+        }
+      });
+    }
+
+    // 如果没有输出，显示空结果
+    if (!hasOutput) {
+      cell.output = '';
     }
 
   } catch (error) {
     console.error('执行错误:', error);
-    result.value = `执行错误: ${error.message}`;
+    cell.output = `执行错误: ${error.message}`;
+  } finally {
+    cell.isExecuting = false;
   }
 };
 
-// 执行全部代码
-const executeAllCode = async () => {
-  try {
-    result.value = '执行中...';
-    plots.value = [];
-
-    const response = await fetch('http://localhost:5000/execute', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        code: editor.state.doc.toString(),
-        previous_code: previousCode.value
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+// 执行所有单元格
+const executeAllCells = async () => {
+  for (let i = 0; i < cells.value.length; i++) {
+    const cell = cells.value[i];
+    if (cell.type === CellType.CODE) {
+      await executeCell(cell.id);
     }
-
-    const data = await response.json();
-
-    // 处理文本输出
-    if (data.text) {
-      result.value = Array.isArray(data.text) ? data.text.join('\n') : data.text;
-    }
-
-    // 处理图形输出
-    if (data.images && data.images.length > 0) {
-      plots.value = data.images.map(image => ({
-        id: image.id,
-        data: image.data
-      }));
-      console.log('设置图形数据:', plots.value);
-    }
-
-    previousCode.value = editor.state.doc.toString(); // 更新已执行的代码
-
-  } catch (error) {
-    console.error('执行错误:', error);
-    result.value = `执行错误: ${error.message}`;
   }
+};
+
+// 在指定单元格下方添加新单元格
+const addCellAfter = (cellId) => {
+  const index = cells.value.findIndex(cell => cell.id === cellId);
+  if (index === -1) return;
+
+  const newCellId = Date.now().toString();
+  cells.value.splice(index + 1, 0, {
+    id: newCellId,
+    type: CellType.CODE,
+    content: '',
+    editor: null,
+    output: '',
+    plots: [],
+    isExecuting: false
+  });
+
+  // 等待DOM更新后初始化编辑器
+  nextTick(() => {
+    initCellEditor(newCellId, '');
+  });
+};
+
+// 删除单元格
+const deleteCell = (cellId) => {
+  const index = cells.value.findIndex(cell => cell.id === cellId);
+  if (index === -1 || cells.value.length <= 1) return; // 至少保留一个单元格
+
+  const cell = cells.value[index];
+  if (cell.editor) {
+    cell.editor.destroy();
+  }
+
+  cells.value.splice(index, 1);
+};
+
+// 切换单元格类型
+const toggleCellType = (cellId) => {
+  const index = cells.value.findIndex(cell => cell.id === cellId);
+  if (index === -1) return;
+
+  const cell = cells.value[index];
+  const newType = cell.type === CellType.CODE ? CellType.MARKDOWN : CellType.CODE;
+  const content = cell.editor ? cell.editor.state.doc.toString() : '';
+
+  // 销毁原编辑器
+  if (cell.editor) {
+    cell.editor.destroy();
+  }
+
+  // 更新单元格类型
+  cells.value[index] = {
+    ...cell,
+    type: newType,
+    editor: null
+  };
+
+  // 重新初始化编辑器
+  nextTick(() => {
+    initCellEditor(cellId, content);
+  });
+};
+
+// 切换变量面板显示
+const toggleVariablesPanel = () => {
+  showVariables.value = !showVariables.value;
 };
 
 // 保存代码
 const saveCode = async () => {
   try {
-    const code = editor.state.doc.toString();
+    // 合并所有单元格代码
+    const allCode = cells.value
+      .filter(cell => cell.type === CellType.CODE)
+      .map(cell => cell.editor?.state.doc.toString() || '')
+      .join('\n\n');
 
     if (!('showSaveFilePicker' in window)) {
       alert('您的浏览器不支持文件系统访问，将使用默认下载方式');
-      return saveCodeFallback();
+      return saveCodeFallback(allCode);
     }
 
     const options = {
-      suggestedName: 'code.jl',
+      suggestedName: 'notebook.jl',
       types: [{
         description: 'Julia 文件',
         accept: {
@@ -277,7 +366,7 @@ const saveCode = async () => {
 
     const handle = await window.showSaveFilePicker(options);
     const writable = await handle.createWritable();
-    await writable.write(code);
+    await writable.write(allCode);
     await writable.close();
 
     console.log('代码已保存到本地');
@@ -287,15 +376,19 @@ const saveCode = async () => {
       return;
     }
     console.error('保存错误:', error);
-    saveCodeFallback();
+    // 定义 allCode 变量以便在错误处理时可以使用
+    const allCode = cells.value
+      .filter(cell => cell.type === CellType.CODE)
+      .map(cell => cell.editor?.state.doc.toString() || '')
+      .join('\n\n');
+    saveCodeFallback(allCode);
   }
 };
 
 // 后备保存方案
-const saveCodeFallback = () => {
+const saveCodeFallback = (code) => {
   try {
-    const code = editor.state.doc.toString();
-    const defaultName = 'code.jl';
+    const defaultName = 'notebook.jl';
     const fileName = prompt('请输入文件名（.jl）:', defaultName);
 
     if (!fileName) return;
@@ -318,84 +411,198 @@ const saveCodeFallback = () => {
 };
 
 // 修改关闭图形窗口的处理函数
-const closePlotWindow = (id) => {
-  console.log('关闭图形窗口:', id);
-  plots.value = plots.value.filter(plot => plot.id !== id);
+const closePlotWindow = (cellId, plotId) => {
+  const cellIndex = cells.value.findIndex(cell => cell.id === cellId);
+  if (cellIndex === -1) return;
+
+  cells.value[cellIndex].plots = cells.value[cellIndex].plots.filter(plot => plot.id !== plotId);
 };
 
-// 清除输出
-const clearOutput = () => {
-  result.value = '';
-  plots.value = [];
+// 清除所有输出
+const clearAllOutputs = () => {
+  cells.value.forEach(cell => {
+    cell.output = '';
+    cell.plots = [];
+  });
+};
+
+// 清理会话
+const cleanupSession = async () => {
+  try {
+    await terminateSession();
+    console.log('会话已终止');
+  } catch (error) {
+    console.error('会话终止失败:', error);
+  }
 };
 
 onMounted(() => {
-  initCodeMirror();
+  // 仅在会话初始化中执行initCells
+  initSession();
 });
 
 onUnmounted(() => {
-  if (editor) {
-    editor.destroy();
-  }
+  cells.value.forEach(cell => {
+    if (cell.editor) {
+      cell.editor.destroy();
+    }
+  });
+  cleanupSession(); // 清理会话
 });
 </script>
 
 <template>
   <div class="code-page" ref="codePage">
-    <div class="back-button-container">
-      <button class="back-button" @click="goBack">
-        <span class="back-icon">←</span>
-        <span class="back-text">返回主页</span>
-      </button>
+    <!-- 会话初始化加载中提示 -->
+    <div v-if="isInitializing" class="session-initializing">
+      <div class="loading-spinner"></div>
+      <p>正在初始化会话，请稍候...</p>
     </div>
 
-    <div class="page-header">
-      <h1>代码编辑与执行系统</h1>
-      <p class="subtitle">MWorks.sylab 通信仿真实验平台</p>
+    <!-- 会话初始化错误提示 -->
+    <div v-if="initializationError" class="session-error">
+      <p>{{ initializationError }}</p>
+      <button @click="initSession">重试</button>
     </div>
 
-    <div class="code-layout">
-      <!-- 左侧代码编辑器 -->
-      <div class="editor-section">
-        <div class="editor-header">
-          <span class="header-title">代码编辑器</span>
-          <div class="editor-controls">
-            <button class="control-btn execute" @click="executeSelectedCode">
-              <span class="btn-icon">▶</span>
-              运行选中
+    <div v-if="!isInitializing && !initializationError">
+      <div class="back-button-container">
+        <button class="back-button" @click="goBack">
+          <span class="back-icon">←</span>
+          <span class="back-text">返回主页</span>
+        </button>
+      </div>
+
+      <div class="page-header">
+        <h1>代码编辑与执行系统</h1>
+        <p class="subtitle">MWorks.sylab 通信仿真实验平台</p>
+      </div>
+
+      <div class="jupyter-layout">
+        <!-- 工具栏 -->
+        <div class="notebook-toolbar">
+          <div class="toolbar-left">
+            <button class="toolbar-btn" @click="addCell(CellType.CODE)">
+              <span class="btn-icon">+</span>
+              添加单元格
             </button>
-            <button class="control-btn execute-all" @click="executeAllCode">
-              <span class="btn-icon">▶▶</span>
-              运行全部
-            </button>
-            <button class="control-btn save" @click="saveCode">
+            <button class="toolbar-btn save" @click="saveCode">
               <span class="btn-icon">💾</span>
               保存
             </button>
           </div>
+          <div class="toolbar-right">
+            <button class="toolbar-btn run-all" @click="executeAllCells">
+              <span class="btn-icon">▶▶</span>
+              运行所有单元格
+            </button>
+            <button class="toolbar-btn clear" @click="clearAllOutputs">
+              <span class="btn-icon">🗑️</span>
+              清除所有输出
+            </button>
+            <button class="toolbar-btn variables" @click="toggleVariablesPanel">
+              <span class="btn-icon">🔍</span>
+              {{ showVariables ? '隐藏变量' : '显示变量' }}
+            </button>
+          </div>
         </div>
-        <div class="editor-container" id="editor-container"></div>
+
+        <div class="notebook-container">
+          <!-- 左侧单元格区域 -->
+          <div class="cells-area">
+            <div
+              v-for="cell in cells"
+              :key="cell.id"
+              class="cell-container"
+              :class="{ 'executing': cell.isExecuting }"
+            >
+              <!-- 单元格工具栏 -->
+              <div class="cell-toolbar">
+                <div class="cell-type-indicator">
+                  {{ cell.type === CellType.CODE ? '代码' : '文本' }}
+                </div>
+                <div class="cell-controls">
+                  <button class="cell-btn" @click="executeCell(cell.id)" v-if="cell.type === CellType.CODE">
+                    <span class="btn-icon">▶</span>
+                  </button>
+                  <button class="cell-btn" @click="toggleCellType(cell.id)">
+                    <span class="btn-icon">{{ cell.type === CellType.CODE ? 'M' : 'C' }}</span>
+                  </button>
+                  <button class="cell-btn" @click="addCellAfter(cell.id)">
+                    <span class="btn-icon">+</span>
+                  </button>
+                  <button class="cell-btn delete" @click="deleteCell(cell.id)">
+                    <span class="btn-icon">×</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 编辑器容器 -->
+              <div
+                :id="`cell-editor-${cell.id}`"
+                class="cell-editor-container"
+              ></div>
+
+              <!-- 输出区域 -->
+              <div class="cell-output" v-if="cell.output || cell.plots.length > 0">
+                <pre class="output-text" v-if="cell.output">{{ cell.output }}</pre>
+
+                <!-- 图表输出 -->
+                <div class="plot-container" v-if="cell.plots.length > 0">
+                  <div v-for="plot in cell.plots" :key="plot.id" class="plot-item">
+                    <div class="plot-controls">
+                      <button class="plot-close-btn" @click="closePlotWindow(cell.id, plot.id)">×</button>
+                    </div>
+                    <!-- 使用v-html直接渲染SVG内容 -->
+                    <div v-if="plot.isSvg" class="svg-container" v-html="plot.data"></div>
+                    <!-- 保留原有的img标签，用于其他类型的图像 -->
+                    <img v-else :src="plot.data" class="plot-image" alt="Julia图表输出" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右侧变量面板 -->
+          <div class="variables-panel" v-if="showVariables">
+            <div class="panel-header">
+              <h3>变量浏览器</h3>
+            </div>
+            <div class="variables-list">
+              <div v-if="Object.keys(sessionVariables).length === 0" class="no-variables">
+                没有可用的变量
+              </div>
+              <div v-else>
+                <table class="variables-table">
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>类型</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(value, name) in sessionVariables" :key="name">
+                      <td class="var-name">{{ name }}</td>
+                      <td class="var-type">{{ value.type }}</td>
+                      <td class="var-value">{{ value.preview }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <!-- 右侧输出区域 -->
-      <div class="output-section">
-        <div class="output-header">
-          <span class="header-title">执行结果</span>
-          <button class="clear-btn" @click="clearOutput">清除输出</button>
-        </div>
-        <div class="output-container">
-          <pre class="output-text" v-if="result">{{ result }}</pre>
-        </div>
-      </div>
+      <PlotWindow
+        v-for="(plot, index) in plots"
+        :key="plot.id"
+        :window-index="index"
+        :plot-data="plot.data"
+        @close="closePlotWindow(plot.id)"
+      />
     </div>
-
-    <PlotWindow
-      v-for="(plot, index) in plots"
-      :key="plot.id"
-      :window-index="index"
-      :plot-data="plot.data"
-      @close="closePlotWindow(plot.id)"
-    />
   </div>
 </template>
 
@@ -414,7 +621,7 @@ onUnmounted(() => {
 .page-header {
   text-align: center;
   color: white;
-  margin: 20px auto;
+  margin: 20px auto 10px;
   width: 100%;
 }
 
@@ -432,245 +639,311 @@ onUnmounted(() => {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-.code-layout {
-  display: grid;
-  grid-template-columns: 4fr 2fr;
-  gap: 16px;
+.jupyter-layout {
+  display: flex;
+  flex-direction: column;
   width: 95%;
   max-width: 1800px;
-  margin: 10px auto 30px;
-  height: calc(100vh - 160px);  /* 调整高度，减少顶部空间 */
+  margin: 0 auto 30px;
+  height: calc(100vh - 160px);
   min-height: 500px;
-}
-
-.editor-section, .output-section {
-  width: 100%;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.98);
+  background: white;
   border-radius: 8px;
+  overflow: hidden;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-  display: flex;
-  flex-direction: column;
-  backdrop-filter: blur(10px);
-  overflow: hidden;
 }
 
-.editor-container {
-  flex: 1;
-  position: relative;
-  height: calc(100% - 50px);
-  min-height: 0;
-  background-color: #1e1e1e;
-  border-radius: 4px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-
-.output-container {
-  flex: 1;
-  padding: 12px;
-  overflow: auto;
-  height: 100%;  /* 确保容器填满剩余空间 */
-  min-height: 0;  /* 允许容器在flex布局中收缩 */
-  display: flex;
-  flex-direction: column;
-}
-
-/* 调整Monaco编辑器的容器样式 */
-#editor-container {
-  width: 100%;
-  height: 100%;
-  min-height: 100%;
-  flex: 1;
-  overflow: hidden;
-}
-
-.editor-header, .output-header {
-  padding: 12px 20px; /* 减小上下内边距 */
-  border-bottom: 1px solid #e8e8e8;
+.notebook-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: rgba(245, 247, 250, 0.95);
-  border-radius: 12px 12px 0 0;
+  padding: 8px 16px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
 }
 
-.header-title {
-  font-size: 16px; /* 稍微减小字体大小 */
-  font-weight: 500;
-  color: #1565c0;
-}
-
-.editor-controls {
+.toolbar-left, .toolbar-right {
   display: flex;
-  gap: 8px; /* 按钮之间的间距 */
-  align-items: center;
+  gap: 8px;
 }
 
-.control-btn {
-  background: #1976d2;
-  color: white;
-  border: none;
-  padding: 6px 12px; /* 稍微减小按钮内边距 */
-  border-radius: 6px;
-  cursor: pointer;
+.toolbar-btn {
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
-  transition: all 0.3s;
-}
-
-.control-btn:hover {
-  background: #1565c0;
-}
-
-.control-btn:disabled {
-  background: #90caf9;
-  cursor: not-allowed;
-}
-
-.control-btn.execute {
-  background: #4caf50;
-}
-
-.control-btn.execute:hover {
-  background: #388e3c;
-}
-
-.control-btn.save {
-  background: #ff9800;
-}
-
-.control-btn.save:hover {
-  background: #f57c00;
-}
-
-.control-btn.execute-all {
-  background: #2196f3;
-}
-
-.control-btn.execute-all:hover {
-  background: #1976d2;
-}
-
-.btn-icon {
-  font-size: 14px;
-}
-
-.clear-btn {
-  background: transparent;
-  color: #666;
-  border: 1px solid #ddd;
-  padding: 8px 16px;
-  border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.toolbar-btn:hover {
+  background: #e0e0e0;
+  border-color: #ccc;
+}
+
+.toolbar-btn.save {
+  background: #fff8e1;
+  border-color: #ffecb3;
+  color: #ff8f00;
+}
+
+.toolbar-btn.save:hover {
+  background: #ffecb3;
+}
+
+.toolbar-btn.run-all {
+  background: #e8f5e9;
+  border-color: #c8e6c9;
+  color: #2e7d32;
+}
+
+.toolbar-btn.run-all:hover {
+  background: #c8e6c9;
+}
+
+.toolbar-btn.clear {
+  background: #ffebee;
+  border-color: #ffcdd2;
+  color: #c62828;
+}
+
+.toolbar-btn.clear:hover {
+  background: #ffcdd2;
+}
+
+.toolbar-btn.variables {
+  background: #e3f2fd;
+  border-color: #bbdefb;
+  color: #1565c0;
+}
+
+.toolbar-btn.variables:hover {
+  background: #bbdefb;
+}
+
+.notebook-container {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.cells-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.cell-container {
+  margin-bottom: 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  overflow: hidden;
   transition: all 0.3s;
 }
 
-.clear-btn:hover {
-  background: #f5f5f5;
-  color: #1976d2;
-  border-color: #1976d2;
+.cell-container.executing {
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.5);
 }
 
-.code-editor {
+.cell-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: #f5f5f5;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.cell-type-indicator {
+  font-size: 12px;
+  color: #666;
+  background: #e0e0e0;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.cell-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.cell-btn {
+  background: none;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.cell-btn:hover {
+  background: #e0e0e0;
+}
+
+.cell-btn.delete {
+  color: #c62828;
+}
+
+.cell-btn.delete:hover {
+  background: #ffcdd2;
+}
+
+.cell-editor-container {
+  min-height: 48px;
+  border-bottom: 1px solid #f0f0f0;
   width: 100%;
-  height: 100%;
-  border: none;
-  background: #fafafa;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 15px;
-  line-height: 1.6;
-  padding: 16px;
-  border-radius: 8px;
-  resize: none;
+  overflow: hidden; /* 防止内容溢出 */
+  position: relative; /* 确保正确定位 */
+}
+
+.cell-output {
+  background: #f8f8f8;
+  padding: 8px 12px;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 .output-text {
   margin: 0;
   white-space: pre-wrap;
   font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.5;
   color: #333;
 }
 
 .plot-container {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 20px;
-  margin-top: 20px;
+  gap: 16px;
+  margin-top: 12px;
+  width: 100%;
+}
+
+.plot-item {
+  position: relative;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+  background: white;
+  min-height: 300px;
+  max-height: 600px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.plot-controls {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 10;
+}
+
+.plot-close-btn {
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.plot-close-btn:hover {
+  background: rgba(0, 0, 0, 0.7);
 }
 
 .plot-image {
   width: 100%;
-  border-radius: 8px;
-  cursor: pointer;
-  transition: transform 0.3s;
+  max-height: 500px;
+  object-fit: contain;
+  display: block;
+  background-color: white;
 }
 
-.plot-image:hover {
-  transform: scale(1.02);
-}
-
-/* 滚动条样式 */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.1);
-  border-radius: 3px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.2);
-  border-radius: 3px;
-  transition: background 0.2s;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
-}
-
-.page-hint {
-  position: fixed;
-  bottom: 15px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.6);
-  color: white;
-  padding: 10px 20px;
-  border-radius: 20px;
-  font-size: 14px;
-  backdrop-filter: blur(5px);
-  z-index: 1000;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.hint-content {
+.variables-panel {
+  width: 300px;
+  border-left: 1px solid #ddd;
+  background: #fafafa;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
 }
 
-.hint-icon {
+.panel-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid #ddd;
+  background: #f0f0f0;
+}
+
+.panel-header h3 {
+  margin: 0;
   font-size: 16px;
-  animation: bounce 1s infinite;
-}
-
-.hint-text {
   font-weight: 500;
+  color: #333;
 }
 
-.page-hint.fade-out {
-  opacity: 0;
-  transform: translateX(-50%) translateY(-20px);
-  pointer-events: none;
+.variables-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.no-variables {
+  color: #666;
+  font-style: italic;
+  text-align: center;
+  padding: 20px 0;
+}
+
+.variables-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.variables-table th {
+  text-align: left;
+  padding: 8px 4px;
+  border-bottom: 2px solid #ddd;
+  color: #333;
+  font-weight: 600;
+}
+
+.variables-table td {
+  padding: 6px 4px;
+  border-bottom: 1px solid #eee;
+  color: #444;
+  vertical-align: top;
+}
+
+.var-name {
+  font-weight: 500;
+  color: #1976d2;
+}
+
+.var-type {
+  color: #666;
+  font-style: italic;
+}
+
+.var-value {
+  font-family: 'Consolas', 'Monaco', monospace;
+  word-break: break-word;
 }
 
 .back-button-container {
@@ -701,23 +974,44 @@ onUnmounted(() => {
 
 .back-icon {
   font-size: 18px;
-  color: var(--bupt-dark-blue);
+  color: #1976d2;
 }
 
 .back-text {
   font-size: 14px;
   font-weight: 500;
-  color: var(--bupt-dark-blue);
+  color: #1976d2;
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
 }
 
 /* CodeMirror 主题覆盖 */
 :deep(.cm-editor) {
   height: 100% !important;
   width: 100%;
+  min-height: 48px; /* 确保编辑器有最小高度 */
 }
 
 :deep(.cm-scroller) {
-  height: 100% !important;
   overflow: auto !important;
 }
 
@@ -726,7 +1020,6 @@ onUnmounted(() => {
   word-break: break-all;
   word-wrap: break-word;
   color: #d4d4d4;
-  min-height: 100% !important;
 }
 
 :deep(.cm-gutters) {
@@ -796,5 +1089,64 @@ onUnmounted(() => {
 :deep(.cm-invalid) {
   color: #F44747;
   text-decoration: underline wavy #F44747;
+}
+
+.svg-container {
+  width: 100%;
+  height: 100%;
+  min-height: 300px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background-color: white;
+}
+
+.svg-container :deep(svg) {
+  width: 100%;
+  height: 100%;
+  max-height: 500px;
+}
+
+.session-initializing, .session-error {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  z-index: 2000;
+}
+
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 5px solid #f3f3f3;
+  border-top: 5px solid #3498db;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 20px;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.session-error {
+  background: rgba(220, 53, 69, 0.9);
+}
+
+.session-error button {
+  margin-top: 20px;
+  padding: 8px 16px;
+  background: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
 }
 </style>
