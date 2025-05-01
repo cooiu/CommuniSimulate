@@ -3,18 +3,18 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { EditorView } from '@codemirror/view';
 import { basicSetup } from 'codemirror';
 import { EditorState } from '@codemirror/state';
-import { julia } from '@plutojl/lang-julia';
-import PlotWindow from './PlotWindow.vue';
+import { julia } from '@plutojl/lang-julia'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { executeCode, createSession, terminateSession } from '../services/api';
+import PlotWindow from '../components/PlotWindow.vue';
 
-const plots = ref([]);
 const cells = ref([]); // 存储代码单元格
 const sessionVariables = ref({}); // 存储会话变量
-const showVariables = ref(false); // 控制变量面板的显示
 const isInitializing = ref(false); // 控制会话初始化状态
 const initializationError = ref(''); // 初始化错误信息
+const plotWindows = ref([]); // [{id, data}]
+let plotWindowId = 0;
 
 const emit = defineEmits(['trigger-next']);
 
@@ -136,7 +136,6 @@ const initCellEditor = (cellId, content) => {
       console.error(`找不到容器: cell-editor-${cellId}`);
       return;
     }
-
     const darkTheme = createDarkTheme();
     const juliaHighlightStyle = createJuliaHighlightStyle();
 
@@ -335,11 +334,6 @@ const toggleCellType = (cellId) => {
   });
 };
 
-// 切换变量面板显示
-const toggleVariablesPanel = () => {
-  showVariables.value = !showVariables.value;
-};
-
 // 保存代码
 const saveCode = async () => {
   try {
@@ -410,12 +404,15 @@ const saveCodeFallback = (code) => {
   }
 };
 
-// 修改关闭图形窗口的处理函数
-const closePlotWindow = (cellId, plotId) => {
-  const cellIndex = cells.value.findIndex(cell => cell.id === cellId);
-  if (cellIndex === -1) return;
+const openPlotWindow = (svgData) => {
+  plotWindows.value.push({
+    id: ++plotWindowId,
+    data: svgData
+  });
+};
 
-  cells.value[cellIndex].plots = cells.value[cellIndex].plots.filter(plot => plot.id !== plotId);
+const closePlotWindow = (id) => {
+  plotWindows.value = plotWindows.value.filter(w => w.id !== id);
 };
 
 // 清除所有输出
@@ -500,10 +497,6 @@ onUnmounted(() => {
               <span class="btn-icon">🗑️</span>
               清除所有输出
             </button>
-            <button class="toolbar-btn variables" @click="toggleVariablesPanel">
-              <span class="btn-icon">🔍</span>
-              {{ showVariables ? '隐藏变量' : '显示变量' }}
-            </button>
           </div>
         </div>
 
@@ -553,56 +546,42 @@ onUnmounted(() => {
                     <div class="plot-controls">
                       <button class="plot-close-btn" @click="closePlotWindow(cell.id, plot.id)">×</button>
                     </div>
-                    <!-- 使用v-html直接渲染SVG内容 -->
+                    <div
+                      v-if="plot.isSvg"
+                      class="svg-container"
+                      v-html="plot.data"
+                      @click="openPlotWindow(plot.data)"
+                      style="cursor:pointer;"
+                    ></div>
+                    <!-- 普通图片 -->
+                    <img
+                      v-else
+                      :src="plot.data"
+                      class="plot-image"
+                      alt="Julia图表输出"
+                      @click="openPlotWindow(plot.data)"
+                      style="cursor:pointer;"
+                    />
+                    <!-- 使用v-html直接渲染SVG内容
                     <div v-if="plot.isSvg" class="svg-container" v-html="plot.data"></div>
-                    <!-- 保留原有的img标签，用于其他类型的图像 -->
-                    <img v-else :src="plot.data" class="plot-image" alt="Julia图表输出" />
+                    保留原有的img标签，用于其他类型的图像
+                    <img v-else :src="plot.data" class="plot-image" alt="Julia图表输出" /> -->
                   </div>
                 </div>
               </div>
             </div>
           </div>
-
-          <!-- 右侧变量面板 -->
-          <div class="variables-panel" v-if="showVariables">
-            <div class="panel-header">
-              <h3>变量浏览器</h3>
-            </div>
-            <div class="variables-list">
-              <div v-if="Object.keys(sessionVariables).length === 0" class="no-variables">
-                没有可用的变量
-              </div>
-              <div v-else>
-                <table class="variables-table">
-                  <thead>
-                    <tr>
-                      <th>名称</th>
-                      <th>类型</th>
-                      <th>值</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="(value, name) in sessionVariables" :key="name">
-                      <td class="var-name">{{ name }}</td>
-                      <td class="var-type">{{ value.type }}</td>
-                      <td class="var-value">{{ value.preview }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
-
-      <PlotWindow
-        v-for="(plot, index) in plots"
-        :key="plot.id"
-        :window-index="index"
-        :plot-data="plot.data"
-        @close="closePlotWindow(plot.id)"
-      />
     </div>
+
+    <PlotWindow
+      v-for="win in plotWindows"
+      :key="win.id"
+      :window-index="win.id"
+      :plot-data="win.data"
+      @close="closePlotWindow(win.id)"
+    />
   </div>
 </template>
 
@@ -874,76 +853,6 @@ onUnmounted(() => {
   object-fit: contain;
   display: block;
   background-color: white;
-}
-
-.variables-panel {
-  width: 300px;
-  border-left: 1px solid #ddd;
-  background: #fafafa;
-  display: flex;
-  flex-direction: column;
-}
-
-.panel-header {
-  padding: 12px 16px;
-  border-bottom: 1px solid #ddd;
-  background: #f0f0f0;
-}
-
-.panel-header h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 500;
-  color: #333;
-}
-
-.variables-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px;
-}
-
-.no-variables {
-  color: #666;
-  font-style: italic;
-  text-align: center;
-  padding: 20px 0;
-}
-
-.variables-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.variables-table th {
-  text-align: left;
-  padding: 8px 4px;
-  border-bottom: 2px solid #ddd;
-  color: #333;
-  font-weight: 600;
-}
-
-.variables-table td {
-  padding: 6px 4px;
-  border-bottom: 1px solid #eee;
-  color: #444;
-  vertical-align: top;
-}
-
-.var-name {
-  font-weight: 500;
-  color: #1976d2;
-}
-
-.var-type {
-  color: #666;
-  font-style: italic;
-}
-
-.var-value {
-  font-family: 'Consolas', 'Monaco', monospace;
-  word-break: break-word;
 }
 
 .back-button-container {

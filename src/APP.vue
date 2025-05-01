@@ -18,7 +18,7 @@ const handlePageChange = (page) => {
       <nav class="navbar">
         <div class="nav-logo">
           <img src="./assets/communication.png" alt="BUPT Logo" class="logo-img" />
-          <span class="logo-text">通信原理实验平台</span>
+          <span class="logo-text">MWORKS在线仿真平台</span>
         </div>
         <div class="nav-links">
           <a href="#" class="nav-link">帮助</a>
@@ -27,7 +27,8 @@ const handlePageChange = (page) => {
 
       <!-- 主页面内容 -->
       <div class="main-content">
-        <h1 class="main-title">通信原理实验平台</h1>
+        <h1 class="main-title">MWORKS在线仿真平台</h1>
+        <p class="main-subtitle-illu">面向通信原理课程</p>
         <p class="main-subtitle">选择您要进入的模块</p>
         <div class="buttons-container">
           <button @click="handlePageChange('simulate')" class="nav-button">
@@ -155,6 +156,12 @@ html, body {
   color: white;
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
+
+.main-subtitle-illu {
+  font-size: 10px;
+  color: rgba(64, 245, 169, 0.9);
+  margin-bottom: 48px;
+  }
 
 .main-subtitle {
   font-size: 20px;

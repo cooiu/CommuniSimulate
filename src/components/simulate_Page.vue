@@ -205,8 +205,8 @@ const handleDSBStopSimulation = () => {
     </div>
 
     <div class="page-header">
-      <h1>通信原理仿真实验系统</h1>
-      <p class="subtitle">MWorks.sysplore 通信仿真实验平台</p>
+      <h1>MWORKS在线仿真平台</h1>
+      <p class="subtitle">MWorks.sysplore 仿真实验平台</p>
     </div>
 
     <div class="simulation-layout">
