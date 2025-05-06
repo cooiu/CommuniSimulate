@@ -5,7 +5,9 @@
  */
 
 // 从环境变量获取API基础URL，默认为本地开发服务器
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+const API_BASE_URL = 'http://10.29.202.194:5000';
+// 'http://[2001:da8:215:3ef:ee18:74f2:c1b4:a88c]:5000';
+// import.meta.env.VITE_API_BASE_URL || 'http://10.129.180.76:5000';
 
 // 会话ID存储键
 const SESSION_ID_KEY = 'codeSessionId';

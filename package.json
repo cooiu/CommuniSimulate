@@ -22,6 +22,7 @@
     "chart.js": "^4.4.8",
     "chartjs-plugin-zoom": "^2.2.0",
     "codemirror": "^6.0.1",
+    "markdown-it": "^14.1.0",
     "monaco-editor": "^0.52.2",
     "naive-ui": "^2.41.0",
     "socket.io-client": "^4.8.1",

@@ -8,6 +8,7 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 import { executeCode, createSession, terminateSession } from '../services/api';
 import PlotWindow from '../components/PlotWindow.vue';
+import MarkdownIt from 'markdown-it';
 
 const cells = ref([]); // 存储代码单元格
 const sessionVariables = ref({}); // 存储会话变量
@@ -108,6 +109,10 @@ const createJuliaHighlightStyle = () => {
   ]);
 };
 
+const md = new MarkdownIt();
+
+const renderMarkdown = (text) => md.render(text);
+
 // 添加新的单元格
 const addCell = (type, content = '') => {
   const id = Date.now().toString();
@@ -118,7 +123,8 @@ const addCell = (type, content = '') => {
     editor: null,
     output: '',
     plots: [],
-    isExecuting: false
+    isExecuting: false,
+    renderedContent: type === CellType.MARKDOWN ? renderMarkdown(content) : ''
   });
 
   // 等待DOM更新后初始化编辑器
@@ -163,6 +169,12 @@ const initCellEditor = (cellId, content) => {
       }
 
       console.log(`单元格 ${cellId} 编辑器初始化成功`);
+
+      if (cells.value[cellIndex].type === CellType.MARKDOWN) {
+        cellEditor.dom.addEventListener('blur', () => {
+          cells.value[cellIndex].renderedContent = renderMarkdown(cellEditor.state.doc.toString());
+        });
+      }
     } catch (error) {
       console.error(`单元格 ${cellId} 编辑器初始化失败:`, error);
     }
@@ -325,7 +337,8 @@ const toggleCellType = (cellId) => {
   cells.value[index] = {
     ...cell,
     type: newType,
-    editor: null
+    editor: null,
+    renderedContent: newType === CellType.MARKDOWN ? renderMarkdown(content) : ''
   };
 
   // 重新初始化编辑器
@@ -534,6 +547,17 @@ onUnmounted(() => {
               <div
                 :id="`cell-editor-${cell.id}`"
                 class="cell-editor-container"
+                :class="{'markdown-editor': cell.type === CellType.MARKDOWN}"
+                v-show="!(cell.type === CellType.MARKDOWN && cell.renderedContent && !cell.editor?.hasFocus)"
+              ></div>
+
+              <!-- Markdown 渲染视图 -->
+              <div
+                v-if="cell.type === CellType.MARKDOWN && cell.renderedContent"
+                v-show="!cell.editor?.hasFocus"
+                class="markdown-rendered"
+                @click="cell.editor?.focus()"
+                v-html="cell.renderedContent"
               ></div>
 
               <!-- 输出区域 -->
@@ -562,10 +586,6 @@ onUnmounted(() => {
                       @click="openPlotWindow(plot.data)"
                       style="cursor:pointer;"
                     />
-                    <!-- 使用v-html直接渲染SVG内容
-                    <div v-if="plot.isSvg" class="svg-container" v-html="plot.data"></div>
-                    保留原有的img标签，用于其他类型的图像
-                    <img v-else :src="plot.data" class="plot-image" alt="Julia图表输出" /> -->
                   </div>
                 </div>
               </div>
@@ -1057,5 +1077,32 @@ onUnmounted(() => {
   border: none;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.markdown-editor {
+  min-height: 48px;
+  background-color: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.markdown-rendered {
+  padding: 8px 12px;
+  cursor: text;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  line-height: 1.6;
+  color: #333;
+  background: transparent;
+  border: none;
+}
+
+.cell-container:has(.markdown-editor) {
+  border: none !important;
+  background: transparent !important;
+}
+
+.cell-container:has(.markdown-editor) .cell-toolbar {
+  background: transparent !important;
+  border-bottom: none !important;
 }
 </style>
